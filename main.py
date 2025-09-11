@@ -17,15 +17,25 @@ language = st.selectbox("Choose language for article output:", ["English", "Hind
 # File uploader
 uploaded_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi", "mkv"])
 
-if uploaded_file is not None:
+# Initialize session state variables
+if "transcript" not in st.session_state:
+    st.session_state.transcript = None
+if "article_en" not in st.session_state:
+    st.session_state.article_en = None
+if "article_hi" not in st.session_state:
+    st.session_state.article_hi = None
+if "video_processed" not in st.session_state:
+    st.session_state.video_processed = False
+
+def process_video(file):
     # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
-        temp_video.write(uploaded_file.read())
+        temp_video.write(file.read())
         video_path = temp_video.name
 
     st.success("✅ Video uploaded successfully!")
 
-    # Step 1: Extract audio
+    # Extract audio
     st.info("Extracting audio from video...")
     video = mp.VideoFileClip(video_path)
     audio_file = video.audio
@@ -36,7 +46,7 @@ if uploaded_file is not None:
 
     st.success("✅ Audio extracted and compressed!")
 
-    # Step 2: Transcribe using Whisper
+    # Transcribe audio
     st.info("Transcribing audio (this may take some time)...")
     with open(audio_path, "rb") as af:
         transcript = client.audio.transcriptions.create(
@@ -46,7 +56,7 @@ if uploaded_file is not None:
 
     st.success("✅ Transcription complete!")
 
-    # Step 3: Generate career article in English
+    # Generate career article in English
     st.info("Generating structured article from transcript...")
     prompt = f"""
     You are an expert career guide. Based on the following transcript, create an article in this exact format:
@@ -78,26 +88,43 @@ if uploaded_file is not None:
     article_text = article_response.choices[0].message.content
     st.success("✅ Article generated in English!")
 
-    # Step 4: Translate to Hindi if selected
-    if language == "Hindi":
-        st.info("Translating article to Hindi...")
-        translation_prompt = f"""
-        Translate the following article to Hindi. Keep formatting intact (headings, bullet points, weightages etc):
+    # Store results in session state
+    st.session_state.transcript = transcript.text
+    st.session_state.article_en = article_text
+    st.session_state.article_hi = None  # Reset Hindi translation cache
+    st.session_state.video_processed = True
 
-        Article:
-        \"\"\"{article_text}\"\"\"
-        """
+# Process video only if new file uploaded or first time
+if uploaded_file is not None:
+    if not st.session_state.video_processed or uploaded_file != st.session_state.get("last_uploaded_file", None):
+        process_video(uploaded_file)
+        st.session_state.last_uploaded_file = uploaded_file
 
-        translation_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a translator that converts English content to Hindi, preserving formatting."},
-                {"role": "user", "content": translation_prompt}
-            ]
-        )
+# If processed, show article based on language
+if st.session_state.video_processed:
+    if language == "English":
+        article_text = st.session_state.article_en
+    else:
+        # Translate if not cached
+        if st.session_state.article_hi is None:
+            st.info("Translating article to Hindi...")
+            translation_prompt = f"""
+            Translate the following article to Hindi. Keep formatting intact (headings, bullet points, weightages etc):
 
-        article_text = translation_response.choices[0].message.content
-        st.success("✅ Article translated to Hindi!")
+            Article:
+            \"\"\"{st.session_state.article_en}\"\"\"
+            """
+            translation_response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a translator that converts English content to Hindi, preserving formatting."},
+                    {"role": "user", "content": translation_prompt}
+                ]
+            )
+            st.session_state.article_hi = translation_response.choices[0].message.content
+            st.success("✅ Article translated to Hindi!")
+
+        article_text = st.session_state.article_hi
 
     # Display article
     st.subheader("📄 Generated Article")
@@ -113,8 +140,7 @@ if uploaded_file is not None:
 
     st.download_button(
         label="⬇️ Download Transcript as TXT",
-        data=transcript.text,
+        data=st.session_state.transcript,
         file_name="transcript.txt",
         mime="text/plain"
     )
-

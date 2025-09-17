@@ -26,57 +26,87 @@ if "article_hi" not in st.session_state:
     st.session_state.article_hi = None
 if "video_processed" not in st.session_state:
     st.session_state.video_processed = False
+if "last_uploaded_file" not in st.session_state:
+    st.session_state.last_uploaded_file = None
 
 def process_video(file):
-    # Save uploaded file temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as temp_video:
         temp_video.write(file.read())
         video_path = temp_video.name
 
     st.success("✅ Video uploaded successfully!")
 
-    # Extract audio
+    # Extract and compress audio
     st.info("Extracting audio from video...")
     video = mp.VideoFileClip(video_path)
-    audio_file = video.audio
+    audio = video.audio
 
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
         audio_path = temp_audio.name
-        audio_file.write_audiofile(audio_path, codec="mp3", bitrate="64k")
+        audio.write_audiofile(audio_path, codec="mp3", bitrate="64k")
 
     st.success("✅ Audio extracted and compressed!")
 
     # Transcribe audio
     st.info("Transcribing audio (this may take some time)...")
     with open(audio_path, "rb") as af:
-        transcript = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",  # or "whisper-1"
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
             file=af
         )
 
+    transcript_text = transcription.text.strip()
     st.success("✅ Transcription complete!")
 
-    # Generate career article in English
-    st.info("Generating structured article from transcript...")
+    if not transcript_text:
+        st.error("❌ No transcript content found. Please upload a valid video.")
+        return
+
+    # Updated and strict prompt
     prompt = f"""
-    You are an expert career guide. Based on the following transcript, create an article in this exact format:
+        You are an expert career guide. Based ONLY on the following transcript, create a detailed and structured career article in the exact format below:
 
-    1. What is it?
-    2. Education(required degrees, certifications)
-    3. Skills (Technical, Soft, Domain-specific)
-    5. Positives
-    6. Challenges
-    7. A Day in the Life
+        1. **Brief Introduction of the Speaker** (if available)
+        2. **What is it?**  
+        - Definition (only if provided by the speaker; otherwise use a general defination of that role)  
+        - Overview of the role or career path
 
-    ⚡ Rules:
-    - Assign weightage (%) to each section (total = 100%).
-    - Explain briefly how weightage is calculated.
-    - Use clear headings and bullet points.
-    - only use the information present in the transcript, do not add any extra information if inforation is not available then add information from internet.
-    Transcript:
-    \"\"\"{transcript.text}\"\"\"
-    """
+        3. **Education**  
+        - According to the speaker: List any qualifications, courses, or educational background mentioned in the transcript  
+        - Other required qualifications (if not take help from internet but link the source): Include degrees, certifications, or training requirements
 
+        4. **Skills**  
+        - According to the speaker: List skills or abilities the speaker mentioned  
+        - Other necessary skills (if not take help from internet but link the source): Include additional skills required for this career
+
+        5. **Positives**  
+        - According to the speaker:include benefits or rewarding aspects as described by the speaker
+        - other positives (if not take help from internet but link the source): Include additional advantages of this career
+
+        6. **Challenges**  
+        - According to the speaker: include difficulties or drawbacks mentioned by the speaker
+        - other challenges (if not take help from internet but link the source): Include additional challenges faced in this career
+
+        7. **A Day in the Life**  
+        - Describe a typical day based only on the speaker’s explanation
+
+        ⚡ **Rules:**
+        - Understand the transcript thoroughly before writing and add content in it.
+        - If a section is not covered in the transcript, clearly write: **“Not mentioned in transcript.”**
+        - Each section must be clearly labeled and strictly reflect content from the transcript.
+        - Assign a **weightage (%)** to each section (except the introduction). The total must equal **100%**.  
+        - Briefly explain how the weightage was calculated (based on the speaker’s emphasis or time spent discussing the topic).
+        - Use **clear headings** and **bullet points** for easy readability.
+        - You may use **realistic placeholder quotes** (e.g., “As I experienced in my role…”) only **if supported** by the transcript.
+        - Use **simple, clear language**.
+        - Write from the speaker’s perspective using **“I”** or **“we”** where appropriate.
+
+        Transcript:
+        \"\"\"{transcript_text}\"\"\"
+
+        """
+
+    st.info("Generating structured article from transcript...")
     article_response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -85,22 +115,22 @@ def process_video(file):
         ]
     )
 
-    article_text = article_response.choices[0].message.content
+    article_text = article_response.choices[0].message.content.strip()
     st.success("✅ Article generated in English!")
 
-    # Store results in session state
-    st.session_state.transcript = transcript.text
+    # Store in session
+    st.session_state.transcript = transcript_text
     st.session_state.article_en = article_text
-    st.session_state.article_hi = None  # Reset Hindi translation cache
+    st.session_state.article_hi = None  # Reset Hindi translation
     st.session_state.video_processed = True
 
-# Process video only if new file uploaded or first time
+# Run only if new file uploaded
 if uploaded_file is not None:
-    if not st.session_state.video_processed or uploaded_file != st.session_state.get("last_uploaded_file", None):
+    if not st.session_state.video_processed or uploaded_file != st.session_state.last_uploaded_file:
         process_video(uploaded_file)
         st.session_state.last_uploaded_file = uploaded_file
 
-# If processed, show article based on language
+# Display result
 if st.session_state.video_processed:
     if language == "English":
         article_text = st.session_state.article_en
@@ -109,11 +139,10 @@ if st.session_state.video_processed:
         if st.session_state.article_hi is None:
             st.info("Translating article to Hindi...")
             translation_prompt = f"""
-            Translate the following article to Hindi. Keep formatting intact (headings, bullet points, weightages etc):
+Translate the following article to Hindi. Preserve all formatting (headings, bullet points, weightage etc.):
 
-            Article:
-            \"\"\"{st.session_state.article_en}\"\"\"
-            """
+\"\"\"{st.session_state.article_en}\"\"\"
+"""
             translation_response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
@@ -121,7 +150,7 @@ if st.session_state.video_processed:
                     {"role": "user", "content": translation_prompt}
                 ]
             )
-            st.session_state.article_hi = translation_response.choices[0].message.content
+            st.session_state.article_hi = translation_response.choices[0].message.content.strip()
             st.success("✅ Article translated to Hindi!")
 
         article_text = st.session_state.article_hi
@@ -130,7 +159,7 @@ if st.session_state.video_processed:
     st.subheader("📄 Generated Article")
     st.markdown(article_text)
 
-    # Download options
+    # Download buttons
     st.download_button(
         label="⬇️ Download Article as TXT",
         data=article_text,
